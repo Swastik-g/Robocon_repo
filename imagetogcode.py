@@ -1,58 +1,45 @@
 import cv2
 import numpy as np
-import os
 
-def image_to_gcode(image_path, output_file, threshold=128, scale=0.2):
-    # 1. Robust File Verification
-    abs_path = os.path.abspath(image_path)
-    if not os.path.exists(abs_path):
-        print(f"CRITICAL ERROR: Could not find file at: {abs_path}")
-        print("Please ensure the filename matches exactly (including .png extension).")
-        return
-
-    # 2. Image Loading
-    img = cv2.imread(abs_path)
-    if img is None:
-        print("CRITICAL ERROR: Failed to decode image. It might be corrupted.")
-        return
-
-    # 3. Pre-processing
+def generate_clear_gcode(image_path, output_file, scale=0.5):
+    # Load image
+    img = cv2.imread(image_path)
+    if img is None: return
+    
+    # Pre-processing for high detail
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
     
-    # 4. Contour Extraction
-    # We use RETR_LIST to get all contours and CHAIN_APPROX_SIMPLE to reduce points
-    contours, _ = cv2.findContours(binary, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    # Use Gaussian Blur to remove noise, then Adaptive Thresholding
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    binary = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                   cv2.THRESH_BINARY_INV, 11, 2)
     
-    print(f"Success: Found {len(contours)} paths. Generating G-code...")
-
-    # 5. G-code Generation
+    # Find contours with high precision
+    contours, _ = cv2.findContours(binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_TC89_L1)
+    
     with open(output_file, 'w') as f:
-        f.write("G21 ; Set units to mm\n")
-        f.write("G90 ; Absolute positioning\n")
-        f.write("G00 Z5 ; Lift tool initially\n")
+        f.write("G21 ; mm\nG90 ; Absolute\n")
         
         for contour in contours:
-            # Only process paths with enough points to be visible
-            if len(contour) > 5:
-                # Move to start of contour
-                start_x, start_y = contour[0][0]
-                f.write(f"G00 X{round(start_x * scale, 3)} Y{round(start_y * scale, 3)}\n")
-                f.write("G01 Z-1 F200 ; Tool Down\n")
+            # Filter out tiny noise (dust)
+            if cv2.contourArea(contour) < 2:
+                continue
                 
-                # Draw the path
-                for point in contour:
-                    x, y = point[0]
-                    f.write(f"G01 X{round(x * scale, 3)} Y{round(y * scale, 3)} F500\n")
-                
-                f.write("G00 Z5 ; Tool Up\n")
-        
-        f.write("G00 X0 Y0 ; Return to home\n")
-        f.write("M30 ; End of program\n")
-    
-    print(f"Finished! G-code saved to: {output_file}")
+            # Move to start (Pen UP)
+            x_start, y_start = contour[0][0]
+            f.write(f"G00 Z5\n")
+            f.write(f"G00 X{round(x_start*scale, 2)} Y{round(y_start*scale, 2)}\n")
+            
+            # Start drawing (Pen DOWN)
+            f.write(f"G01 Z-1 F200\n")
+            for point in contour:
+                x, y = point[0]
+                f.write(f"G01 X{round(x*scale, 2)} Y{round(y*scale, 2)} F600\n")
+            
+            # Back to start to close the loop perfectly
+            f.write(f"G01 X{round(x_start*scale, 2)} Y{round(y_start*scale, 2)}\n")
+            
+        f.write("G00 Z5\nG00 X0 Y0\nM30\n")
+    print(f"High-detail G-code saved to {output_file}")
 
-# --- Execution Block ---
-# Ensure 'input_logo.png' exists in the same folder as this script
-if __name__ == "__main__":
-    image_to_gcode('input_logo.jpg', 'output.gcode', threshold=128, scale=0.1)
+generate_clear_gcode('IITR-500x500.png', 'clear_output.gcode')
